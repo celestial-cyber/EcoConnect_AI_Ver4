@@ -1,0 +1,8 @@
+node_modules
+dist
+data
+.env
+shots
+e2e.js
+__pycache__/
+*.py[cod]
