@@ -11,20 +11,40 @@ import {
 import { useAuth } from '../context/AuthContext.jsx'
 import { db, classify, serverInfo } from '../lib/db.js'
 import { PICKUP_STATUS, WASTE_TYPES, wasteLabel } from '../lib/waste.js'
+import { haversineKm } from '../lib/geo.js'
 
 
 export function UserHome() {
   const { user } = useAuth()
   const [rows, setRows] = useState([])
+  const [facilities, setFacilities] = useState([])
   const nav = useNavigate()
 
   useEffect(() => {
     db.myPickups(user.id).then(setRows).catch(() => {})
+    db.allIndustries().then(setFacilities).catch(() => {})
   }, [user.id])
 
   const delivered = rows.filter((r) => r.status === 'delivered')
   const active = rows.filter((r) => !['delivered', 'cancelled'].includes(r.status))
   const savedKg = delivered.reduce((s, r) => s + Number(r.est_weight_kg || 0), 0)
+  const categoryCounts = WASTE_TYPES.map((type) => ({
+    ...type,
+    count: rows.filter((row) => row.waste_type === type.id).length,
+  })).filter((type) => type.count > 0)
+  const anchor = rows[0] ? { lat: Number(rows[0].lat), lng: Number(rows[0].lng) } : null
+  const nearby = facilities
+    .filter((facility) => Number.isFinite(Number(facility.lat)) && Number.isFinite(Number(facility.lng)))
+    .map((facility) => ({
+      ...facility,
+      distance: anchor ? haversineKm(anchor, { lat: Number(facility.lat), lng: Number(facility.lng) }) : null,
+    }))
+    .sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0))
+    .slice(0, 3)
+  const mapPoints = [
+    ...nearby.map((facility) => ({ lat: facility.lat, lng: facility.lng, label: facility.name, kind: 'org' })),
+    ...(anchor ? [{ ...anchor, label: 'Your recent pickup', kind: 'me' }] : []),
+  ]
 
   return (
     <Page
@@ -32,12 +52,56 @@ export function UserHome() {
       sub="Everything you have sent back into circulation."
       right={<button className="btn" onClick={() => nav('/u/scan')}>Scan an item</button>}
     >
+      <div className="welcomePanel">
+        <div>
+          <span className="sectionKicker">YOUR CIRCULARITY SNAPSHOT</span>
+          <h2>{delivered.length ? 'Your materials are moving.' : 'Start your circularity story.'}</h2>
+          <p>{delivered.length
+            ? `${kg(savedKg)} has been diverted from landfill through verified handovers.`
+            : 'Scan an item and EcoConnect will identify the material, locate a suitable facility, and arrange the next practical step.'}</p>
+        </div>
+        <div className="welcomeGlyph" aria-hidden="true">↻</div>
+      </div>
+
       <div className="grid g4">
         <Stat value={user.eco_points ?? 0} label="ECO POINTS" tone="am" />
         <Stat value={delivered.length} label="ITEMS DIVERTED" tone="em" />
         <Stat value={kg(savedKg)} label="WEIGHT DIVERTED" />
         <Stat value={active.length} label="IN PROGRESS" />
       </div>
+
+      <div className="grid g2 dashboardFeatureGrid">
+        <Card title="Materials tracked" hint="Based on your saved classification history.">
+          {categoryCounts.length ? (
+            <div className="materialList">
+              {categoryCounts.map((type) => (
+                <div className="materialRow" key={type.id}>
+                  <span className={`materialDot material-${type.id}`} />
+                  <span>{type.label}</span>
+                  <b>{type.count}</b>
+                </div>
+              ))}
+            </div>
+          ) : <Empty title="Your material mix will appear here">Scan your first item to start building a useful history.</Empty>}
+        </Card>
+        <Card title="Nearby facilities" hint="Demo facilities are labelled clearly and served by the live API." right={<button className="btn ghost sm" onClick={() => nav('/u/scan')}>Find a match</button>}>
+          {nearby.length ? (
+            <div className="facilityList">
+              {nearby.map((facility) => (
+                <div className="facilityRow" key={facility.id}>
+                  <div className="facilityIcon">↗</div>
+                  <div><b>{facility.name}</b><span>{facility.org_type} · {facility.operating_status}</span></div>
+                  {facility.distance !== null && <strong>{facility.distance.toFixed(1)} km</strong>}
+                </div>
+              ))}
+            </div>
+          ) : <Empty title="No facilities loaded">The recommendations will appear when the API is available.</Empty>}
+        </Card>
+      </div>
+
+      <Card title="Your local recovery network" hint="Recent pickup context and nearby recommended facilities.">
+        <MapPlot points={mapPoints} caption="LIVE FACILITY NETWORK" height={280} />
+      </Card>
 
       <Card title="Recent activity" hint="Newest first.">
         {rows.length === 0 ? (

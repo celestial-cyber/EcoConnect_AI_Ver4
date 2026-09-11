@@ -54,6 +54,8 @@ create table if not exists industries (
                       check (verification_status in ('pending','verified','rejected')),
   verification_note   text,
   verified_at         text,
+  operating_status   text not null default 'operating',
+  description        text,
   created_at          text not null
 );
 create index if not exists idx_ind_owner on industries(owner_id);
@@ -183,10 +185,22 @@ create table if not exists geocache (
 );
 `)
 
+for (const [name, definition] of [
+  ['operating_status', "text not null default 'operating'"],
+  ['description', 'text'],
+]) {
+  if (!db.pragma('table_info(industries)').some((column) => column.name === name)) {
+    db.exec(`alter table industries add column ${name} ${definition}`)
+  }
+}
+
 /* ---------------- seed ---------------- */
 export function seedIfEmpty() {
   const count = db.prepare('select count(*) c from profiles').get().c
-  if (count > 0) return false
+  if (count > 0) {
+    seedDemoFacilities()
+    return false
+  }
 
   const pw = bcrypt.hashSync('demo1234', 10)
   const mkUser = db.prepare(`insert into profiles
@@ -292,7 +306,45 @@ export function seedIfEmpty() {
   ]
   for (const row of picks) mkPick.run(row)
 
+  seedDemoFacilities()
   return true
+}
+
+/* Idempotent, clearly-labelled facilities keep an existing demo database useful. */
+function seedDemoFacilities() {
+  const ownerId = 'u-ind'
+  const owner = db.prepare('select id from profiles where id = ?').get(ownerId)
+  if (!owner) return
+
+  const insert = db.prepare(`insert or ignore into industries
+    (id,owner_id,name,org_type,reg_number,contact_person,phone,contact_email,address,city,pincode,
+     lat,lng,capacity_kg_month,verification_status,operating_status,description,created_at)
+    values (@id,@owner_id,@name,@org_type,@reg_number,@contact_person,@phone,@contact_email,@address,
+     @city,@pincode,@lat,@lng,@capacity_kg_month,'verified',@operating_status,@description,@created_at)`)
+  const waste = db.prepare('insert or ignore into industry_waste_types values (?,?)')
+  const area = db.prepare(`insert or ignore into industry_areas
+    (id,industry_id,area_name,lat,lng,radius_km,created_at) values (?,?,?,?,?,?,?)`)
+
+  const facilities = [
+    ['demo-greenloop', 'DEMO • GreenLoop Recycling Center', 'recycler', 'Recycling', 'plastic,paper,metal,glass', 'Kukatpally, Hyderabad', 17.484, 78.413, 18, 'Operating', 'Sample facility for product demonstrations handling common dry recyclables.'],
+    ['demo-polycycle', 'DEMO • PolyCycle Plastic Recovery', 'recycler', 'Plastic recycling', 'plastic', 'Balanagar Industrial Estate, Hyderabad', 17.476, 78.442, 120, 'Operating', 'Sample facility focused on sorting and recovering household plastic packaging.'],
+    ['demo-circuitcare', 'DEMO • CircuitCare E-waste Collection', 'recycler', 'E-waste collection', 'e-waste,metal', 'Begumpet, Hyderabad', 17.444, 78.466, 35, 'Operating', 'Sample drop-off point for devices, cables and small electronics.'],
+    ['demo-papertrail', 'DEMO • PaperTrail Recovery Works', 'recycler', 'Paper recycling', 'paper,cardboard', 'Nampally, Hyderabad', 17.385, 78.467, 70, 'Operating', 'Sample paper recovery partner for offices, homes and retail packaging.'],
+    ['demo-terra', 'DEMO • TerraCycle Compost Hub', 'composting', 'Organic waste', 'organic', 'Kondapur, Hyderabad', 17.466, 78.366, 45, 'Operating', 'Sample composting hub for food scraps and garden material.'],
+    ['demo-cityloop', 'DEMO • CityLoop Municipal Facility', 'municipal', 'Municipal collection', 'plastic,paper,glass,organic', 'Secunderabad, Hyderabad', 17.439, 78.498, 250, 'Operating', 'Sample municipal transfer facility used for routing demonstrations.'],
+    ['demo-safecycle', 'DEMO • SafeCycle Drop-off', 'hazardous', 'Household hazardous waste', 'e-waste,metal', 'Jubilee Hills, Hyderabad', 17.430, 78.407, 12, 'Appointment only', 'Sample controlled drop-off for batteries, small electronics and other special handling items.'],
+  ]
+
+  for (const [id, name, orgType, category, types, address, lat, lng, radius, status, description] of facilities) {
+    insert.run({
+      id, owner_id: ownerId, name, org_type: orgType, reg_number: `DEMO/${id.toUpperCase()}`,
+      contact_person: 'EcoConnect demo desk', phone: '+91 90000 00000', contact_email: 'demo@ecoconnect.local',
+      address, city: 'Hyderabad', pincode: '500000', lat, lng, capacity_kg_month: radius * 100,
+      operating_status: status, description, created_at: hoursAgo(24),
+    })
+    for (const type of types.split(',')) waste.run(id, type)
+    area.run(`area-${id}`, id, category, lat, lng, Math.min(25, radius), hoursAgo(24))
+  }
 }
 
 /* ---------------- read helpers used across routes ---------------- */
